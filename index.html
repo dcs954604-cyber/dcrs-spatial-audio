@@ -2,194 +2,277 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DCRS Spatial Audio</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Abhimanyu: Chakravyuha Survival</title>
     <style>
         body {
-            background-color: #0b0f19;
-            color: #e2e8f0;
-            font-family: monospace, sans-serif;
-            text-align: center;
-            padding: 10px;
             margin: 0;
+            overflow: hidden;
+            background-color: #0b0b0b;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
         }
-        h1 { color: #38bdf8; font-size: 1.5rem; margin: 10px 0; }
-        .card {
-            background: #1e293b;
-            border: 1px solid #334155;
-            padding: 12px;
-            margin: 8px auto;
-            max-width: 380px;
-            border-radius: 8px;
+        #ui {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            color: #ffcc00;
+            z-index: 10;
+            pointer-events: none;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
         }
-        button, select {
-            background: #38bdf8;
-            color: #0b0f19;
-            border: none;
-            padding: 10px 15px;
-            font-weight: bold;
-            border-radius: 5px;
-            margin: 5px;
-            cursor: pointer;
+        h1 { margin: 0 0 5px 0; font-size: 22px; letter-spacing: 1px; }
+        p { margin: 0; font-size: 14px; color: #fff; }
+        #controls-hint {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: rgba(255,255,255,0.7);
+            font-size: 13px;
+            pointer-events: none;
         }
-        video {
-            width: 160px;
-            height: 120px;
-            border: 2px solid #334155;
-            border-radius: 6px;
-            transform: scaleX(-1);
-            margin-top: 5px;
-        }
-        input[type=range] { width: 90%; }
     </style>
 </head>
 <body>
-    <h1>DCRS Spatial Audio</h1>
-    <div class="card">
-        <p style="margin:5px 0;">Brand: DCRS Productions</p>
-        <p style="margin:5px 0;">Target: POCO F1 / Android 10</p>
-        <button id="startBtn">Start Engine</button>
+    <div id="ui">
+        <h1>CHAKRAVYUHA SURVIVAL</h1>
+        <p id="wave-text">Wave: 1 | Enemies Defeated: 0</p>
+        <p id="status-text" style="color: #ff4444; font-weight: bold;">Status: Stand Your Ground</p>
     </div>
+    <div id="controls-hint">Drag to Rotate Camera | Tap Anywhere to Throw Returning Wheel</div>
 
-    <div class="card">
-        <h3>Camera Tracking</h3>
-        <video id="webcam" autoplay playsinline muted></video>
-        <p id="status" style="color: #38bdf8;">Status: Ready to start</p>
-        <p id="yawDisplay">Head Yaw: 0°</p>
-        <button id="calibBtn">Calibrate Center</button>
-    </div>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer;
+        let player, wheel;
+        let enemies = [];
+        let wave = 1;
+        let score = 0;
+        let isAlive = true;
+        let spawnTimer = 0;
 
-    <div class="card">
-        <h3>Spatial Audio Player</h3>
-        <audio id="audioElement" loop crossorigin="anonymous">
-            <source src="https://actions.google.com/sounds/v1/ambiences/rain_heavy.ogg" type="audio/ogg">
-        </audio>
-        <button id="playAudioBtn">Play Audio</button>
-        <br><br>
-        <label>Sensitivity: <span id="sensVal">1.5</span></label><br>
-        <input type="range" id="sensRange" min="0.5" max="3.0" step="0.1" value="1.5">
-    </div>
+        // Wheel Throw Mechanics
+        let isWheelThrown = false;
+        let wheelVelocity = new THREE.Vector3();
 
-<script type="module">
-    import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
+        // Touch & Mouse Control Variables
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        let cameraAngle = 0;
+        let touchStartTime = 0;
+        let touchStartPos = { x: 0, y: 0 };
 
-    const startBtn = document.getElementById('startBtn');
-    const calibBtn = document.getElementById('calibBtn');
-    const playAudioBtn = document.getElementById('playAudioBtn');
-    const webcam = document.getElementById('webcam');
-    const status = document.getElementById('status');
-    const yawDisplay = document.getElementById('yawDisplay');
-    const audioElement = document.getElementById('audioElement');
-    const sensRange = document.getElementById('sensRange');
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a0f08);
+            scene.fog = new THREE.FogExp2(0x1a0f08, 0.035);
 
-    let faceLandmarker;
-    let webcamRunning = false;
-    let audioCtx, pannerNode, sourceNode;
-    let centerYaw = 0;
-    let sensitivity = 1.5;
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
 
-    sensRange.addEventListener('input', (e) => {
-        sensitivity = parseFloat(e.target.value);
-        document.getElementById('sensVal').textContent = sensitivity;
-    });
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
 
-    startBtn.addEventListener('click', async () => {
-        status.textContent = "Loading MediaPipe...";
-        const filesetResolver = await FilesetResolver.forVisionTasks(
-            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
-        );
-        faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-            baseOptions: {
-                modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
-                delegate: "GPU"
-            },
-            runningMode: "VIDEO",
-            numFaces: 1
-        });
-        status.textContent = "Model Loaded. Starting Camera...";
-        startCamera();
-    });
+            const ambientLight = new THREE.AmbientLight(0xffa500, 0.4);
+            scene.add(ambientLight);
 
-    function startCamera() {
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 320, height: 240 } })
-            .then((stream) => {
-                webcam.srcObject = stream;
-                webcam.addEventListener('loadeddata', predictWebcam);
-                status.textContent = "Tracking Active";
-            })
-            .catch(err => {
-                status.textContent = "Camera Error: " + err.message;
+            const sunLight = new THREE.DirectionalLight(0xffeedd, 0.8);
+            sunLight.position.set(20, 40, 20);
+            sunLight.castShadow = true;
+            scene.add(sunLight);
+
+            const floorGeo = new THREE.PlaneGeometry(300, 300);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x2b1d0c, roughness: 0.9 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // Abhimanyu Character Group
+            player = new THREE.Group();
+            
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x990000, roughness: 0.5 });
+            const bodyGeo = new THREE.CylinderGeometry(0.4, 0.6, 1.5, 6);
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 0.75;
+            body.castShadow = true;
+            player.add(body);
+
+            const headMat = new THREE.MeshStandardMaterial({ color: 0xdcaca6 });
+            const headGeo = new THREE.SphereGeometry(0.3, 8, 8);
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.y = 1.6;
+            player.add(head);
+
+            // Broken Chariot Wheel Weapon
+            const wheelGroup = new THREE.Group();
+            const rimGeo = new THREE.TorusGeometry(0.8, 0.12, 8, 24);
+            const wheelMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.8 });
+            const rim = new THREE.Mesh(rimGeo, wheelMat);
+            rim.rotation.x = Math.PI / 2;
+            wheelGroup.add(rim);
+
+            for (let i = 0; i < 4; i++) {
+                const spokeGeo = new THREE.BoxGeometry(0.08, 0.08, 1.5);
+                const spoke = new THREE.Mesh(spokeGeo, wheelMat);
+                spoke.rotation.y = (Math.PI / 2) * i;
+                wheelGroup.add(spoke);
+            }
+            wheelGroup.position.set(0.9, 0.9, 0);
+            player.add(wheelGroup);
+            wheel = wheelGroup;
+
+            scene.add(player);
+
+            // Clean Pointer Logic to Separate Dragging (Camera) from Tapping (Throwing)
+            window.addEventListener('resize', onWindowResize);
+            
+            document.addEventListener('pointerdown', (e) => {
+                isDragging = true;
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+                touchStartTime = Date.now();
+                touchStartPos = { x: e.clientX, y: e.clientY };
             });
-    }
 
-    async function predictWebcam() {
-        if (!faceLandmarker) return;
-        let startTimeMs = performance.now();
-        if (webcam.currentTime !== 0) {
-            const results = faceLandmarker.detectForVideo(webcam, startTimeMs);
-            if (results.faceLandmarks && results.faceLandmarks.length > 0) {
-                const landmarks = results.faceLandmarks[0];
-                // Approximate yaw calculation using nose (1), left ear (234), right ear (454)
-                const leftEar = landmarks[234];
-                const rightEar = landmarks[454];
-                const nose = landmarks[1];
-                
-                const rawYaw = (nose.x - (leftEar.x + rightEar.x) / 2) * 100;
-                let adjustedYaw = (rawYaw - centerYaw) * sensitivity;
-                
-                yawDisplay.textContent = `Head Yaw: ${adjustedYaw.toFixed(1)}°`;
+            document.addEventListener('pointermove', (e) => {
+                if (!isDragging) return;
+                const deltaX = e.clientX - previousMousePosition.x;
+                cameraAngle -= deltaX * 0.008;
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+            });
 
-                // Update Spatial Audio Panner Position if active
-                if (pannerNode) {
-                    // Map yaw to 3D X coordinate (-2m to +2m)
-                    let pannerX = Math.max(-2, Math.min(2, adjustedYaw / 15));
-                    pannerNode.positionX.setValueAtTime(pannerX, audioCtx.currentTime);
-                    pannerNode.positionZ.setValueAtTime(-1.0, audioCtx.currentTime);
+            document.addEventListener('pointerup', (e) => {
+                isDragging = false;
+                const moveDistance = Math.hypot(e.clientX - touchStartPos.x, e.clientY - touchStartPos.y);
+                const touchDuration = Date.now() - touchStartTime;
+
+                // If it's a quick tap without dragging much, throw the wheel!
+                if (touchDuration < 250 && moveDistance < 10) {
+                    throwWheel();
                 }
+            });
+
+            animate();
+        }
+
+        function throwWheel() {
+            if (!isAlive || isWheelThrown) return;
+            isWheelThrown = true;
+
+            scene.attach(wheel);
+            wheel.position.copy(player.position).add(new THREE.Vector3(0, 1.2, 0));
+
+            const forwardDir = new THREE.Vector3(
+                -Math.sin(cameraAngle),
+                0,
+                -Math.cos(cameraAngle)
+            );
+            
+            wheelVelocity.copy(forwardDir).multiplyScalar(0.85);
+        }
+
+        function spawnEnemy() {
+            const angle = Math.random() * Math.PI * 2;
+            const distance = 30;
+            const x = player.position.x + Math.cos(angle) * distance;
+            const z = player.position.z + Math.sin(angle) * distance;
+
+            const enemyGeo = new THREE.ConeGeometry(0.4, 1.4, 4);
+            const enemyMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+            const enemyMesh = new THREE.Mesh(enemyGeo, enemyMat);
+            enemyMesh.position.set(x, 0.7, z);
+            enemyMesh.castShadow = true;
+            scene.add(enemyMesh);
+
+            enemies.push({ mesh: enemyMesh, speed: 0.05 + (wave * 0.004) });
+        }
+
+        function updateUI() {
+            document.getElementById('wave-text').innerText = `Wave: ${wave} | Enemies Defeated: ${score}`;
+            if (score >= wave * 5) {
+                wave++;
+                document.getElementById('status-text').innerText = `Wave ${wave} Closing In!`;
             }
         }
-        window.requestAnimationFrame(predictWebcam);
-    }
 
-    calibBtn.addEventListener('click', () => {
-        // Recalibrate center offset
-        // For simplicity, reset center
-        centerYaw = 0;
-        status.textContent = "Calibrated Center!";
-    });
+        function animate() {
+            if (!isAlive) return;
+            requestAnimationFrame(animate);
 
-    playAudioBtn.addEventListener('click', () => {
-        if (!audioCtx) {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            sourceNode = audioCtx.createMediaElementSource(audioElement);
-            
-            pannerNode = audioCtx.createPanner();
-            pannerNode.panningModel = 'HRTF';
-            pannerNode.distanceModel = 'inverse';
-            pannerNode.refDistance = 1;
-            pannerNode.maxDistance = 10000;
-            pannerNode.rolloffFactor = 1;
-            pannerNode.coneInnerAngle = 360;
+            spawnTimer++;
+            if (spawnTimer > Math.max(25, 90 - (wave * 10))) {
+                spawnEnemy();
+                spawnTimer = 0;
+            }
 
-            // Listener position fixed at center
-            audioCtx.listener.positionX.setValueAtTime(0, audioCtx.listener.currentTime);
-            audioCtx.listener.positionY.setValueAtTime(0, audioCtx.listener.currentTime);
-            audioCtx.listener.positionZ.setValueAtTime(0, audioCtx.listener.currentTime);
+            // Wheel Flight & Boomerang Return
+            if (isWheelThrown) {
+                wheel.position.add(wheelVelocity);
+                wheel.rotation.z += 0.45; // Fast spin
 
-            sourceNode.connect(pannerNode);
-            pannerNode.connect(audioCtx.destination);
+                enemies.forEach((enemy, index) => {
+                    if (wheel.position.distanceTo(enemy.mesh.position) < 1.8) {
+                        scene.remove(enemy.mesh);
+                        enemies.splice(index, 1);
+                        score++;
+                        updateUI();
+                    }
+                });
+
+                // Homing return to player after distance
+                const distToPlayer = wheel.position.distanceTo(player.position);
+                if (distToPlayer > 15) {
+                    wheelVelocity.negate().multiplyScalar(1.1);
+                }
+
+                const toPlayer = new THREE.Vector3().subVectors(player.position, wheel.position);
+                if (distToPlayer > 10) {
+                    wheelVelocity.lerp(toPlayer.normalize().multiplyScalar(0.9), 0.15);
+                }
+
+                // Catch back in hand
+                if (distToPlayer < 1.3 && isWheelThrown && wheelVelocity.length() < 10) {
+                    isWheelThrown = false;
+                    wheelVelocity.set(0,0,0);
+                    player.add(wheel);
+                    wheel.position.set(0.9, 0.9, 0);
+                    wheel.rotation.set(0,0,0);
+                }
+            }
+
+            // Move enemies towards player
+            enemies.forEach((enemy) => {
+                enemy.mesh.lookAt(player.position);
+                enemy.mesh.translateZ(enemy.speed);
+
+                if (enemy.mesh.position.distanceTo(player.position) < 1.0) {
+                    isAlive = false;
+                    document.getElementById('status-text').innerText = `FALLEN IN THE CHAKRAVYUHA. Score: ${score}. Tap to Restart.`;
+                    document.getElementById('status-text').style.color = '#ff0000';
+                    document.addEventListener('click', () => location.reload(), { once: true });
+                }
+            });
+
+            // GTA V Style Third-Person Camera
+            const targetCameraX = player.position.x + Math.sin(cameraAngle) * 6;
+            const targetCameraZ = player.position.z + Math.cos(cameraAngle) * 6;
+            camera.position.set(targetCameraX, player.position.y + 3, targetCameraZ);
+            camera.lookAt(player.position.x, player.position.y + 1, player.position.z);
+
+            renderer.render(scene, camera);
         }
-        if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
         }
-        if (audioElement.paused) {
-            audioElement.play();
-            playAudioBtn.textContent = "Pause Audio";
-        } else {
-            audioElement.pause();
-            playAudioBtn.textContent = "Play Audio";
-        }
-    });
-</script>
+
+        window.onload = init;
+    </script>
 </body>
 </html>
+
